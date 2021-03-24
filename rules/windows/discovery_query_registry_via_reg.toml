@@ -1,22 +1,24 @@
 [metadata]
 creation_date = "2020/12/04"
 maturity = "production"
-updated_date = "2020/12/04"
+updated_date = "2021/03/03"
 
 [rule]
 author = ["Elastic"]
 description = """
-Enumeration or discovery of the Windows registry using reg.exe. This information can be used to perform
-follow-on activities.
+Enumeration or discovery of the Windows registry using reg.exe. This information can be used to perform follow-on
+activities.
 """
-index = ["logs-endpoint.events.*", "winlogbeat-*"]
+from = "now-9m"
+index = ["logs-endpoint.events.*", "winlogbeat-*", "logs-windows.*"]
 language = "eql"
-license = "Elastic License"
+license = "Elastic License v2"
 name = "Query Registry via reg.exe"
 risk_score = 21
 rule_id = "68113fdc-3105-4cdd-85bb-e643c416ef0b"
 severity = "low"
 tags = ["Elastic", "Host", "Windows", "Threat Detection", "Discovery"]
+timestamp_override = "event.ingested"
 type = "eql"
 
 query = '''

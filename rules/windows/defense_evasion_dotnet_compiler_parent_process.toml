@@ -1,20 +1,21 @@
 [metadata]
 creation_date = "2020/08/21"
 maturity = "production"
-updated_date = "2020/11/30"
+updated_date = "2021/03/03"
 
 [rule]
 author = ["Elastic"]
 description = "Identifies suspicious .NET code execution. connections."
 from = "now-9m"
-index = ["winlogbeat-*", "logs-endpoint.events.*"]
+index = ["winlogbeat-*", "logs-endpoint.events.*", "logs-windows.*"]
 language = "eql"
-license = "Elastic License"
+license = "Elastic License v2"
 name = "Suspicious .NET Code Compilation"
 risk_score = 47
 rule_id = "201200f1-a99b-43fb-88ed-f65a45c4972c"
 severity = "medium"
 tags = ["Elastic", "Host", "Windows", "Threat Detection", "Defense Evasion"]
+timestamp_override = "event.ingested"
 type = "eql"
 
 query = '''
