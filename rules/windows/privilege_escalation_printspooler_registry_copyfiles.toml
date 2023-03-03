@@ -1,7 +1,10 @@
 [metadata]
 creation_date = "2020/11/26"
+integration = ["endpoint"]
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
@@ -11,7 +14,7 @@ Exploitation involves chaining multiple primitives to load an arbitrary DLL into
 SYSTEM.
 """
 from = "now-9m"
-index = ["winlogbeat-*", "logs-endpoint.events.*", "logs-windows.*"]
+index = ["logs-endpoint.events.*"]
 language = "eql"
 license = "Elastic License v2"
 name = "Suspicious Print Spooler Point and Print DLL"

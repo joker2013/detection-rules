@@ -1,7 +1,10 @@
 [metadata]
 creation_date = "2020/11/17"
+integration = ["endpoint"]
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
@@ -10,14 +13,14 @@ The Debugger and SilentProcessExit registry keys can allow an adversary to inter
 different process to be executed. This functionality can be abused by an adversary to establish persistence.
 """
 from = "now-9m"
-index = ["winlogbeat-*", "logs-endpoint.events.*", "logs-windows.*"]
+index = ["logs-endpoint.events.*"]
 language = "eql"
 license = "Elastic License v2"
 name = "Image File Execution Options Injection"
 references = [
     "https://oddvar.moe/2018/04/10/persistence-using-globalflags-in-image-file-execution-options-hidden-from-autoruns-exe/",
 ]
-risk_score = 41
+risk_score = 47
 rule_id = "6839c821-011d-43bd-bd5b-acff00257226"
 severity = "medium"
 tags = ["Elastic", "Host", "Windows", "Threat Detection", "Persistence"]
@@ -26,12 +29,12 @@ type = "eql"
 
 query = '''
 registry where length(registry.data.strings) > 0 and
- registry.path : ("HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*.exe\\Debugger", 
-                  "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*\\Debugger", 
-                  "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\*\\MonitorProcess", 
+ registry.path : ("HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*.exe\\Debugger",
+                  "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\*\\Debugger",
+                  "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\*\\MonitorProcess",
                   "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows NT\\CurrentVersion\\SilentProcessExit\\*\\MonitorProcess") and
    /* add FPs here */
- not registry.data.strings : ("C:\\Program Files*\\ThinKiosk\\thinkiosk.exe", "*\\PSAppDeployToolkit\\*")
+ not registry.data.strings regex~ ("""C:\\Program Files( \(x86\))?\\ThinKiosk\\thinkiosk\.exe""", """.*\\PSAppDeployToolkit\\.*""")
 '''
 
 

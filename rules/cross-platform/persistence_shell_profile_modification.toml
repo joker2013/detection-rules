@@ -1,7 +1,10 @@
 [metadata]
 creation_date = "2021/01/19"
+integration = ["endpoint"]
 maturity = "production"
-updated_date = "2021/03/08"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
@@ -61,7 +64,7 @@ name = "Event Triggered Execution"
 reference = "https://attack.mitre.org/techniques/T1546/"
 [[rule.threat.technique.subtechnique]]
 id = "T1546.004"
-name = ".bash_profile and .bashrc"
+name = "Unix Shell Configuration Modification"
 reference = "https://attack.mitre.org/techniques/T1546/004/"
 
 

@@ -4,18 +4,20 @@
 # 2.0.
 
 """ECS Schemas management."""
+import json
 import os
 import re
-from typing import List
+from typing import List, Optional
 
-import kql
 import eql
-import json
 import requests
+from semver import Version
 import yaml
 
-from .semver import Version
-from .utils import DateTimeEncoder, unzip, get_etc_path, gzip_compress, read_gzip, cached
+import kql
+
+from .utils import (DateTimeEncoder, cached, get_etc_path, gzip_compress,
+                    read_gzip, unzip)
 
 
 def _decompress_and_save_schema(url, release_name):
@@ -56,7 +58,7 @@ def _decompress_and_save_schema(url, release_name):
 
     # remove all non-beat directories
     fs = {k: v for k, v in fs.get("folders", {}).items() if k.endswith("beat")}
-    print(f"Saving etc/beats_schema/{release_name}.json")
+    print(f"Saving detection_rules/etc/beats_schema/{release_name}.json")
 
     compressed = gzip_compress(json.dumps(fs, sort_keys=True, cls=DateTimeEncoder))
     path = get_etc_path("beats_schemas", release_name + ".json.gz")
@@ -64,21 +66,40 @@ def _decompress_and_save_schema(url, release_name):
         f.write(compressed)
 
 
+def download_beats_schema(version: str):
+    """Download a beats schema by version."""
+    url = 'https://api.github.com/repos/elastic/beats/releases'
+    releases = requests.get(url)
+
+    version = f'v{version.lstrip("v")}'
+    beats_release = None
+    for release in releases.json():
+        if release['tag_name'] == version:
+            beats_release = release
+            break
+
+    if not beats_release:
+        print(f'beats release {version} not found!')
+        return
+
+    beats_url = beats_release['zipball_url']
+    name = beats_release['tag_name']
+
+    _decompress_and_save_schema(beats_url, name)
+
+
 def download_latest_beats_schema():
     """Download additional schemas from beats releases."""
     url = 'https://api.github.com/repos/elastic/beats/releases'
     releases = requests.get(url)
 
-    latest_release = max(releases.json(), key=lambda release: Version(release["tag_name"].lstrip("v")))
-    beats_url = latest_release['zipball_url']
-    name = latest_release['tag_name']
-
-    _decompress_and_save_schema(beats_url, name)
+    latest_release = max(releases.json(), key=lambda release: Version.parse(release["tag_name"].lstrip("v")))
+    download_beats_schema(latest_release["tag_name"])
 
 
-def refresh_master_schema():
-    """Download and refresh beats schema from master."""
-    _decompress_and_save_schema('https://github.com/elastic/beats/archive/master.zip', 'master')
+def refresh_main_schema():
+    """Download and refresh beats schema from main."""
+    _decompress_and_save_schema('https://github.com/elastic/beats/archive/main.zip', 'main')
 
 
 def _flatten_schema(schema: list, prefix="") -> list:
@@ -90,7 +111,7 @@ def _flatten_schema(schema: list, prefix="") -> list:
     for s in schema:
         if s.get("type") == "group":
             nested_prefix = prefix + s["name"] + "."
-            # beats is complicated. it seems lke we would expect a zoom.webhook.*, for the zoom.webhook dataset,
+            # beats is complicated. it seems like we would expect a zoom.webhook.*, for the zoom.webhook dataset,
             # but instead it's just at zoom.* directly.
             #
             # we have what looks like zoom.zoom.*, but should actually just be zoom.*.
@@ -98,18 +119,30 @@ def _flatten_schema(schema: list, prefix="") -> list:
             # it's probably not perfect, but we can fix other bugs as we run into them later
             if len(schema) == 1 and nested_prefix.startswith(prefix + prefix):
                 nested_prefix = s["name"] + "."
+            if "field" in s:
+                # integrations sometimes have a group with a single field
+                flattened.extend(_flatten_schema(s["field"], prefix=nested_prefix))
+                continue
+            elif "fields" not in s:
+                # integrations sometimes have a group with no fields
+                continue
+
             flattened.extend(_flatten_schema(s["fields"], prefix=nested_prefix))
         elif "fields" in s:
             flattened.extend(_flatten_schema(s["fields"], prefix=prefix))
         elif "name" in s:
             s = s.copy()
             # type is implicitly keyword if not defined
-            # example: https://github.com/elastic/beats/blob/master/packetbeat/_meta/fields.common.yml#L7-L12
+            # example: https://github.com/elastic/beats/blob/main/packetbeat/_meta/fields.common.yml#L7-L12
             s.setdefault("type", "keyword")
             s["name"] = prefix + s["name"]
             flattened.append(s)
 
     return flattened
+
+
+def flatten_ecs_schema(schema: dict) -> dict:
+    return _flatten_schema(schema)
 
 
 def get_field_schema(base_directory, prefix="", include_common=False):
@@ -155,6 +188,9 @@ def get_beats_sub_schema(schema: dict, beat: str, module: str, *datasets: str):
         dataset_dir = module_dir.get("folders", {}).get(dataset, {})
         flattened.extend(get_field_schema(dataset_dir, prefix=module + ".", include_common=True))
 
+    # we also need to capture (beta?) fields which are directly within the module _meta.files.fields
+    flattened.extend(get_field_schema(module_dir, include_common=True))
+
     return {field["name"]: field for field in sorted(flattened, key=lambda f: f["name"])}
 
 
@@ -164,7 +200,7 @@ def get_versions() -> List[Version]:
     for filename in os.listdir(get_etc_path("beats_schemas")):
         version_match = re.match(r'v(.+)\.json\.gz', filename)
         if version_match:
-            versions.append(Version(version_match.groups()[0]))
+            versions.append(Version.parse(version_match.groups()[0]))
 
     return versions
 
@@ -176,10 +212,10 @@ def get_max_version() -> str:
 
 @cached
 def read_beats_schema(version: str = None):
-    if version and version.lower() == 'master':
-        return json.loads(read_gzip(get_etc_path('beats_schemas', 'master.json.gz')))
+    if version and version.lower() == 'main':
+        return json.loads(read_gzip(get_etc_path('beats_schemas', 'main.json.gz')))
 
-    version = Version(version) if version else None
+    version = Version.parse(version) if version else None
     beats_schemas = get_versions()
 
     if version and version not in beats_schemas:
@@ -244,3 +280,9 @@ def get_schema_from_kql(tree: kql.ast.BaseNode, beats: list, version: str = None
             datasets.update(child.value for child in node.value if isinstance(child, kql.ast.String))
 
     return get_schema_from_datasets(beats, modules, datasets, version=version)
+
+
+def parse_beats_from_index(index: Optional[list]) -> List[str]:
+    indexes = index or []
+    beat_types = [index.split("-")[0] for index in indexes if "beat-*" in index]
+    return beat_types

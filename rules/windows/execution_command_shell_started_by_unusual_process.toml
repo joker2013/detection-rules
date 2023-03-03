@@ -1,29 +1,57 @@
 [metadata]
 creation_date = "2020/08/21"
+integration = ["endpoint", "windows"]
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
 description = "Identifies a suspicious parent child process relationship with cmd.exe descending from an unusual process."
 from = "now-9m"
-index = ["winlogbeat-*", "logs-endpoint.events.*", "logs-windows.*"]
-language = "kuery"
+index = ["winlogbeat-*", "logs-endpoint.events.*", "logs-windows.*", "endgame-*"]
+language = "eql"
 license = "Elastic License v2"
 name = "Unusual Parent Process for cmd.exe"
+note = """## Setup
+
+If enabling an EQL rule on a non-elastic-agent index (such as beats) for versions <8.2, events will not define `event.ingested` and default fallback for EQL rules was not added until 8.2, so you will need to add a custom pipeline to populate `event.ingested` to @timestamp for this rule to work.
+"""
 risk_score = 47
 rule_id = "3b47900d-e793-49e8-968f-c90dc3526aa1"
 severity = "medium"
-tags = ["Elastic", "Host", "Windows", "Threat Detection", "Execution"]
+tags = ["Elastic", "Host", "Windows", "Threat Detection", "Execution", "Elastic Endgame"]
 timestamp_override = "event.ingested"
-type = "query"
+type = "eql"
 
 query = '''
-event.category:process and event.type:(start or process_started) and
-  process.name:cmd.exe and
-  process.parent.name:(lsass.exe or csrss.exe or notepad.exe or regsvr32.exe or dllhost.exe or LogonUI.exe or wermgr.exe or spoolsv.exe or
-   jucheck.exe or jusched.exe or ctfmon.exe or taskhostw.exe or GoogleUpdate.exe or sppsvc.exe or sihost.exe or slui.exe or
-   SIHClient.exe or SearchIndexer.exe or SearchProtocolHost.exe or FlashPlayerUpdateService.exe or WerFault.exe or WUDFHost.exe or unsecapp.exe or wlanext.exe)
+process where event.type == "start" and
+  process.name : "cmd.exe" and
+  process.parent.name : ("lsass.exe",
+                         "csrss.exe",
+                         "epad.exe",
+                         "regsvr32.exe",
+                         "dllhost.exe",
+                         "LogonUI.exe",
+                         "wermgr.exe",
+                         "spoolsv.exe",
+                         "jucheck.exe",
+                         "jusched.exe",
+                         "ctfmon.exe",
+                         "taskhostw.exe",
+                         "GoogleUpdate.exe",
+                         "sppsvc.exe",
+                         "sihost.exe",
+                         "slui.exe",
+                         "SIHClient.exe",
+                         "SearchIndexer.exe",
+                         "SearchProtocolHost.exe",
+                         "FlashPlayerUpdateService.exe",
+                         "WerFault.exe",
+                         "WUDFHost.exe",
+                         "unsecapp.exe",
+                         "wlanext.exe" )
 '''
 
 

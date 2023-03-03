@@ -5,10 +5,12 @@
 
 """Shared resources for tests."""
 
+import os
 import unittest
+from typing import Union
 
-from detection_rules import rule_loader
 from detection_rules.rule import TOMLRule
+from detection_rules.rule_loader import DeprecatedCollection, DeprecatedRule, RuleCollection, production_filter
 
 
 class BaseRuleTest(unittest.TestCase):
@@ -16,11 +18,13 @@ class BaseRuleTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.rule_files = rule_loader.load_rule_files(verbose=False)
-        cls.rule_lookup = rule_loader.load_rules(verbose=False)
-        cls.rules = cls.rule_lookup.values()
-        cls.production_rules = rule_loader.get_production_rules()
+        os.environ["DR_NOTIFY_INTEGRATION_UPDATE_AVAILABLE"] = "1"
+        rc = RuleCollection.default()
+        cls.all_rules = rc.rules
+        cls.rule_lookup = rc.id_map
+        cls.production_rules = rc.filter(production_filter)
+        cls.deprecated_rules: DeprecatedCollection = rc.deprecated
 
     @staticmethod
-    def rule_str(rule: TOMLRule, trailer=' ->'):
+    def rule_str(rule: Union[DeprecatedRule, TOMLRule], trailer=' ->'):
         return f'{rule.id} - {rule.name}{trailer or ""}'

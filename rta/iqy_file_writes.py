@@ -11,9 +11,13 @@
 import os
 
 from . import common
+from . import RtaMetadata
 
 
-@common.requires_os(common.WINDOWS)
+metadata = RtaMetadata(uuid="71f67037-1df3-4d5f-b8cb-eaf295ad16ed", platforms=["windows"], endpoint=[], siem=[], techniques=[])
+
+
+@common.requires_os(metadata.platforms)
 def main():
     common.log("Suspicious File Writes (IQY, PUB)")
     adobe_path = os.path.abspath("AcroRd32.exe")
@@ -40,7 +44,7 @@ def main():
     fake_doc_iqy = os.path.abspath("test_word.iqy")
     common.execute([msoffice_path, "/c", "echo", "test", ">", fake_doc_iqy])
 
-    # Brwoser writing IQY file
+    # Browser writing IQY file
     fake_browser_iqy = os.path.abspath("test_browser.iqy")
     common.execute([browser_path, "/c", "echo", "test", ">", fake_browser_iqy])
 

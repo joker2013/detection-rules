@@ -1,7 +1,10 @@
 [metadata]
 creation_date = "2021/01/21"
+integration = ["endpoint"]
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
@@ -14,7 +17,9 @@ index = ["auditbeat-*", "logs-endpoint.events.*"]
 language = "kuery"
 license = "Elastic License v2"
 name = "Potential Persistence via Login Hook"
-note = "Starting in Mac OS X 10.7 (Lion), users can specify certain applications to be re-opened when a user reboots their machine. This can be abused to establish or maintain persistence on a compromised system."
+note = """## Triage and analysis
+
+Starting in Mac OS X 10.7 (Lion), users can specify certain applications to be re-opened when a user reboots their machine. This can be abused to establish or maintain persistence on a compromised system."""
 references = ["https://github.com/D00MFist/PersistentJXA/blob/master/LoginScript.js"]
 risk_score = 47
 rule_id = "ac412404-57a5-476f-858f-4e8fbb4f48d8"
@@ -26,7 +31,8 @@ type = "query"
 query = '''
 event.category:"file" and not event.type:"deletion" and
  file.name:"com.apple.loginwindow.plist" and
- process.name:(* and not (systemmigrationd or DesktopServicesHelper or diskmanagementd or rsync or launchd or cfprefsd or xpcproxy or ManagedClient or MCXCompositor))
+ process.name:(* and not (systemmigrationd or DesktopServicesHelper or diskmanagementd or rsync or launchd or cfprefsd or xpcproxy or ManagedClient or MCXCompositor or backupd or "iMazing Profile Editor"
+))
 '''
 
 
@@ -36,15 +42,22 @@ framework = "MITRE ATT&CK"
 id = "T1547"
 name = "Boot or Logon Autostart Execution"
 reference = "https://attack.mitre.org/techniques/T1547/"
-[[rule.threat.technique.subtechnique]]
-id = "T1547.011"
-name = "Plist Modification"
-reference = "https://attack.mitre.org/techniques/T1547/011/"
-
 
 
 [rule.threat.tactic]
 id = "TA0003"
 name = "Persistence"
 reference = "https://attack.mitre.org/tactics/TA0003/"
+[[rule.threat]]
+framework = "MITRE ATT&CK"
+[[rule.threat.technique]]
+id = "T1647"
+name = "Plist File Modification"
+reference = "https://attack.mitre.org/techniques/T1647/"
+
+
+[rule.threat.tactic]
+id = "TA0005"
+name = "Defense Evasion"
+reference = "https://attack.mitre.org/tactics/TA0005/"
 

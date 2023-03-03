@@ -1,7 +1,9 @@
 [metadata]
 creation_date = "2020/07/08"
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/08/24"
 
 [rule]
 author = ["Elastic"]
@@ -9,7 +11,7 @@ description = """
 Generates a detection alert for each external alert written to the configured indices. Enabling this rule allows you to
 immediately begin investigating external alerts in the app.
 """
-index = ["apm-*-transaction*", "auditbeat-*", "filebeat-*", "logs-*", "packetbeat-*", "winlogbeat-*"]
+index = ["apm-*-transaction*", "traces-apm*", "auditbeat-*", "filebeat-*", "logs-*", "packetbeat-*", "winlogbeat-*"]
 language = "kuery"
 license = "Elastic License v2"
 max_signals = 10000

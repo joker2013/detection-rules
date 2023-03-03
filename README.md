@@ -1,6 +1,7 @@
 [![Supported Python versions](https://img.shields.io/badge/python-3.8+-yellow.svg)](https://www.python.org/downloads/)
 [![Unit Tests](https://github.com/elastic/detection-rules/workflows/Unit%20Tests/badge.svg)](https://github.com/elastic/detection-rules/actions)
 [![Chat](https://img.shields.io/badge/chat-%23security--detection--rules-blueviolet)](https://ela.st/slack)
+[![ATT&CK navigator coverage](https://img.shields.io/badge/ATT&CK-Navigator-red.svg)](https://ela.st/detection-rules-navigator)
 
 # Detection Rules
 
@@ -10,12 +11,13 @@ This repository was first announced on Elastic's blog post, [Elastic Security op
 
 
 ## Table of Contents
-- [Overview of this repository](#overview-of-this-repository)
-- [Getting started](#getting-started)
-- [Red Team Automation](rta)
-- [How to contribute](#how-to-contribute)
-- [Licensing](#licensing)
-- [Questions? Problems? Suggestions?](#questions-problems-suggestions)
+- [Detection Rules](#detection-rules)
+  - [Table of Contents](#table-of-contents)
+  - [Overview of this repository](#overview-of-this-repository)
+  - [Getting started](#getting-started)
+  - [How to contribute](#how-to-contribute)
+  - [Licensing](#licensing)
+  - [Questions? Problems? Suggestions?](#questions-problems-suggestions)
 
 
 ## Overview of this repository
@@ -25,7 +27,7 @@ Detection Rules contains more than just static rule files. This repository also 
 | folder                                |  description                                                                        |
 |-------------------------------------- |------------------------------------------------------------------------------------ |
 | [`detection_rules/`](detection_rules) | Python module for rule parsing, validating and packaging                            |
-| [`etc/`](etc)                         | Miscellaneous files, such as ECS and Beats schemas                                  |
+| [`detection_rules/etc/`](etc)         | Miscellaneous files, such as ECS and Beats schemas                                  |
 | [`kibana/`](kibana)                   | Python library for handling the API calls to Kibana and the Detection Engine        |
 | [`kql/`](kql)                         | Python library for parsing and validating Kibana Query Language                     |
 | [`rta/`](rta)                         | Red Team Automation code used to emulate attacker techniques, used for rule testing |
@@ -37,18 +39,18 @@ Detection Rules contains more than just static rule files. This repository also 
 
 Although rules can be added by manually creating `.toml` files, we don't recommend it. This repository also consists of a python module that aids rule creation and unit testing. Assuming you have Python 3.8+, run the below command to install the dependencies:
 ```console
-$ pip install -r requirements.txt
+$ pip3 install ".[dev]"
 Collecting jsl==0.2.4
   Downloading jsl-0.2.4.tar.gz (21 kB)
 Collecting jsonschema==3.2.0
   Downloading jsonschema-3.2.0-py2.py3-none-any.whl (56 kB)
-     |████████████████████████████████| 56 kB 318 kB/s 
+     |████████████████████████████████| 56 kB 318 kB/s
 Collecting requests==2.22.0
   Downloading requests-2.22.0-py2.py3-none-any.whl (57 kB)
-     |████████████████████████████████| 57 kB 1.2 MB/s 
+     |████████████████████████████████| 57 kB 1.2 MB/s
 Collecting Click==7.0
   Downloading Click-7.0-py2.py3-none-any.whl (81 kB)
-     |████████████████████████████████| 81 kB 2.6 MB/s 
+     |████████████████████████████████| 81 kB 2.6 MB/s
 ...
 ```
 
@@ -97,6 +99,6 @@ Occasionally, we may want to import rules from another repository that already h
 ## Questions? Problems? Suggestions?
 
 - Want to know more about the Detection Engine? Check out the [overview](https://www.elastic.co/guide/en/siem/guide/current/detection-engine-overview.html) in Kibana.
-- This repository includes new and updated rules that have not been released yet. To see the latest set of rules released with the stack, see the [Prebuilt rule reference](https://www.elastic.co/guide/en/siem/guide/current/prebuilt-rules.html).
+- This repository includes new and updated rules that have not been released yet. To see the latest set of rules released with the stack, see the [Prebuilt rule reference](https://www.elastic.co/guide/en/security/current/prebuilt-rules-changelog.html).
 - If you’d like to report a false positive or other type of bug, please create a GitHub issue and check if there's an existing one first.
 - Need help with Detection Rules? Post an issue or ask away in our [Security Discuss Forum](https://discuss.elastic.co/c/security/) or the **#security-detection-rules** channel within [Slack workspace](https://www.elastic.co/blog/join-our-elastic-stack-workspace-on-slack).

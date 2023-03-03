@@ -1,7 +1,10 @@
 [metadata]
 creation_date = "2020/08/11"
+integration = ["endpoint"]
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
@@ -15,11 +18,14 @@ false_positives = [
     the source IP address of your reverse-proxy.
     """,
 ]
-index = ["packetbeat-*"]
+from = "now-9m"
+index = ["auditbeat-*", "filebeat-*", "packetbeat-*", "logs-endpoint.events.*"]
 language = "lucene"
 license = "Elastic License v2"
 name = "Inbound Connection to an Unsecure Elasticsearch Node"
-note = "This rule requires the addition of port `9200` and `send_all_headers` to the `HTTP` protocol configuration in `packetbeat.yml`. See the References section for additional configuration documentation."
+note = """## Setup
+
+This rule requires the addition of port `9200` and `send_all_headers` to the `HTTP` protocol configuration in `packetbeat.yml`. See the References section for additional configuration documentation."""
 references = [
     "https://www.elastic.co/guide/en/elasticsearch/reference/current/configuring-security.html",
     "https://www.elastic.co/guide/en/beats/packetbeat/current/packetbeat-http-options.html#_send_all_headers",
@@ -27,7 +33,7 @@ references = [
 risk_score = 47
 rule_id = "31295df3-277b-4c56-a1fb-84e31b4222a9"
 severity = "medium"
-tags = ["Elastic", "Network", "Threat Detection", "Initial Access"]
+tags = ["Elastic", "Network", "Threat Detection", "Initial Access", "Host"]
 timestamp_override = "event.ingested"
 type = "query"
 

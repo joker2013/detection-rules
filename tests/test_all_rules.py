@@ -4,26 +4,30 @@
 # 2.0.
 
 """Test that all rules have valid metadata and syntax."""
-import json
 import os
 import re
-import sys
+import unittest
+import warnings
 from collections import defaultdict
 from pathlib import Path
 
-import eql
-import jsonschema
-import pytoml
-import toml
+from semver import Version
 
 import kql
-from detection_rules import attack, beats, ecs
-from detection_rules.packaging import load_versions
-from detection_rules.rule import TOMLRule, BaseQueryRuleData
-from detection_rules.rule_loader import FILE_PATTERN, find_unneeded_defaults_from_rule
-from detection_rules.utils import get_path, load_etc_dump
-from rta import get_ttp_names
+from detection_rules import attack
+from detection_rules.beats import parse_beats_from_index
+from detection_rules.packaging import current_stack_version
+from detection_rules.rule import (QueryRuleData, TOMLRuleContents,
+                                  load_integrations_manifests)
+from detection_rules.rule_loader import FILE_PATTERN
+from detection_rules.schemas import definitions
+from detection_rules.utils import INTEGRATION_RULE_DIR, get_path, load_etc_dump
+from detection_rules.version_lock import default_version_lock
+from rta import get_available_tests
+
 from .base import BaseRuleTest
+
+PACKAGE_STACK_VERSION = Version.parse(current_stack_version(), optional_minor_and_patch=True)
 
 
 class TestValidRules(BaseRuleTest):
@@ -31,19 +35,7 @@ class TestValidRules(BaseRuleTest):
 
     def test_schema_and_dupes(self):
         """Ensure that every rule matches the schema and there are no duplicates."""
-        self.assertGreaterEqual(len(self.rule_files), 1, 'No rules were loaded from rules directory!')
-
-    def test_all_rule_files(self):
-        """Ensure that every rule file can be loaded and validate against schema."""
-        for file_name, contents in self.rule_files.items():
-            try:
-                TOMLRule(file_name, contents)
-            except (pytoml.TomlError, toml.TomlDecodeError) as e:
-                print("TOML error when parsing rule file \"{}\"".format(os.path.basename(file_name)), file=sys.stderr)
-                raise e
-            except jsonschema.ValidationError as e:
-                print("Schema error when parsing rule file \"{}\"".format(os.path.basename(file_name)), file=sys.stderr)
-                raise e
+        self.assertGreaterEqual(len(self.all_rules), 1, 'No rules were loaded from rules directory!')
 
     def test_file_names(self):
         """Test that the file names meet the requirement."""
@@ -54,44 +46,28 @@ class TestValidRules(BaseRuleTest):
         self.assertIsNone(re.match(file_pattern, 'still_not_a_valid_file_name.not_json'),
                           f'Incorrect pattern for verifying rule names: {file_pattern}')
 
-        for rule_file in self.rule_files.keys():
-            self.assertIsNotNone(re.match(file_pattern, os.path.basename(rule_file)),
-                                 f'Invalid file name for {rule_file}')
+        for rule in self.all_rules:
+            file_name = str(rule.path.name)
+            self.assertIsNotNone(re.match(file_pattern, file_name), f'Invalid file name for {rule.path}')
 
     def test_all_rule_queries_optimized(self):
         """Ensure that every rule query is in optimized form."""
-        for file_name, contents in self.rule_files.items():
-            rule = TOMLRule(file_name, contents)
-
-            if contents["rule"].get("langauge") == "kql":
-                source = contents["rule"]["query"]
+        for rule in self.production_rules:
+            if rule.contents.data.get("language") == "kql":
+                source = rule.contents.data.query
                 tree = kql.parse(source, optimize=False)
                 optimized = tree.optimize(recursive=True)
                 err_message = f'\n{self.rule_str(rule)} Query not optimized for rule\n' \
                               f'Expected: {optimized}\nActual: {source}'
                 self.assertEqual(tree, optimized, err_message)
 
-    def test_no_unrequired_defaults(self):
-        """Test that values that are not required in the schema are not set with default values."""
-        rules_with_hits = {}
-
-        for file_name, contents in self.rule_files.items():
-            default_matches = find_unneeded_defaults_from_rule(contents)
-
-            if default_matches:
-                rules_with_hits[f'{contents["rule"]["rule_id"]} - {contents["rule"]["name"]}'] = default_matches
-
-        error_msg = f'The following rules have unnecessary default values set: ' \
-                    f'\n{json.dumps(rules_with_hits, indent=2)}'
-        self.assertDictEqual(rules_with_hits, {}, error_msg)
-
     def test_production_rules_have_rta(self):
         """Ensure that all production rules have RTAs."""
         mappings = load_etc_dump('rule-mapping.yml')
-        ttp_names = get_ttp_names()
+        ttp_names = sorted(get_available_tests())
 
         for rule in self.production_rules:
-            if isinstance(rule.contents.data, BaseQueryRuleData) and rule.id in mappings:
+            if isinstance(rule.contents.data, QueryRuleData) and rule.id in mappings:
                 matching_rta = mappings[rule.id].get('rta_name')
 
                 self.assertIsNotNone(matching_rta, f'{self.rule_str(rule)} does not have RTAs')
@@ -103,13 +79,17 @@ class TestValidRules(BaseRuleTest):
     def test_duplicate_file_names(self):
         """Test that no file names are duplicated."""
         name_map = defaultdict(list)
-        for file_path in self.rule_files:
-            base_name = os.path.basename(file_path)
-            name_map[base_name].append(file_path)
+
+        for rule in self.all_rules:
+            name_map[rule.path.name].append(rule.path.name)
 
         duplicates = {name: paths for name, paths in name_map.items() if len(paths) > 1}
         if duplicates:
-            self.fail(f"Found duplicated file names {duplicates}")
+            self.fail(f"Found duplicated file names: {duplicates}")
+
+    def test_rule_type_changes(self):
+        """Test that a rule type did not change for a locked version"""
+        default_version_lock.manage_versions(self.production_rules)
 
 
 class TestThreatMappings(BaseRuleTest):
@@ -117,11 +97,11 @@ class TestThreatMappings(BaseRuleTest):
 
     def test_technique_deprecations(self):
         """Check for use of any ATT&CK techniques that have been deprecated."""
-        replacement_map = attack.techniques_redirect_map
+        replacement_map = attack.load_techniques_redirect()
         revoked = list(attack.revoked)
         deprecated = list(attack.deprecated)
 
-        for rule in self.rules:
+        for rule in self.all_rules:
             revoked_techniques = {}
             threat_mapping = rule.contents.data.threat
 
@@ -138,7 +118,7 @@ class TestThreatMappings(BaseRuleTest):
 
     def test_tactic_to_technique_correlations(self):
         """Ensure rule threat info is properly related to a single tactic and technique."""
-        for rule in self.rules:
+        for rule in self.all_rules:
             threat_mapping = rule.contents.data.threat or []
             if threat_mapping:
                 for entry in threat_mapping:
@@ -196,7 +176,7 @@ class TestThreatMappings(BaseRuleTest):
 
     def test_duplicated_tactics(self):
         """Check that a tactic is only defined once."""
-        for rule in self.rules:
+        for rule in self.all_rules:
             threat_mapping = rule.contents.data.threat
             tactics = [t.tactic.name for t in threat_mapping or []]
             duplicates = sorted(set(t for t in tactics if tactics.count(t) > 1))
@@ -211,23 +191,21 @@ class TestRuleTags(BaseRuleTest):
 
     def test_casing_and_spacing(self):
         """Ensure consistent and expected casing for controlled tags."""
-        def normalize(s):
-            return ''.join(s.lower().split())
 
         expected_tags = [
             'APM', 'AWS', 'Asset Visibility', 'Azure', 'Configuration Audit', 'Continuous Monitoring',
-            'Data Protection', 'Elastic', 'Elastic Endgame', 'Endpoint Security', 'GCP', 'Identity and Access', 'Linux',
-            'Logging', 'ML', 'macOS', 'Monitoring', 'Network', 'Okta', 'Packetbeat', 'Post-Execution', 'SecOps',
-            'Windows'
+            'Data Protection', 'Elastic', 'Elastic Endgame', 'Endpoint Security', 'GCP', 'Identity and Access',
+            'Investigation Guide', 'Linux', 'Logging', 'ML', 'macOS', 'Monitoring', 'Network', 'Okta', 'Packetbeat',
+            'Post-Execution', 'SecOps', 'Windows'
         ]
-        expected_case = {normalize(t): t for t in expected_tags}
+        expected_case = {t.casefold(): t for t in expected_tags}
 
-        for rule in self.rules:
+        for rule in self.all_rules:
             rule_tags = rule.contents.data.tags
 
             if rule_tags:
-                invalid_tags = {t: expected_case[normalize(t)] for t in rule_tags
-                                if normalize(t) in list(expected_case) and t != expected_case[normalize(t)]}
+                invalid_tags = {t: expected_case[t.casefold()] for t in rule_tags
+                                if t.casefold() in list(expected_case) and t != expected_case[t.casefold()]}
 
                 if invalid_tags:
                     error_msg = f'{self.rule_str(rule)} Invalid casing for expected tags\n'
@@ -238,11 +216,12 @@ class TestRuleTags(BaseRuleTest):
     def test_required_tags(self):
         """Test that expected tags are present within rules."""
         # indexes considered; only those with obvious relationships included
-        # 'apm-*-transaction*', 'auditbeat-*', 'endgame-*', 'filebeat-*', 'logs-*', 'logs-aws*',
+        # 'apm-*-transaction*', 'traces-apm*', 'auditbeat-*', 'endgame-*', 'filebeat-*', 'logs-*', 'logs-aws*',
         # 'logs-endpoint.alerts-*', 'logs-endpoint.events.*', 'logs-okta*', 'packetbeat-*', 'winlogbeat-*'
 
         required_tags_map = {
             'apm-*-transaction*': {'all': ['APM']},
+            'traces-apm*': {'all': ['APM']},
             'auditbeat-*': {'any': ['Windows', 'macOS', 'Linux']},
             'endgame-*': {'all': ['Elastic Endgame']},
             'logs-aws*': {'all': ['AWS']},
@@ -254,7 +233,7 @@ class TestRuleTags(BaseRuleTest):
             'winlogbeat-*': {'all': ['Windows']}
         }
 
-        for rule in self.rules:
+        for rule in self.all_rules:
             rule_tags = rule.contents.data.tags
             error_msg = f'{self.rule_str(rule)} Missing tags:\nActual tags: {", ".join(rule_tags)}'
 
@@ -265,7 +244,7 @@ class TestRuleTags(BaseRuleTest):
             if 'Elastic' not in rule_tags:
                 missing_required_tags.add('Elastic')
 
-            if isinstance(rule.contents.data, BaseQueryRuleData):
+            if isinstance(rule.contents.data, QueryRuleData):
                 for index in rule.contents.data.index:
                     expected_tags = required_tags_map.get(index, {})
                     expected_all = expected_tags.get('all', [])
@@ -292,7 +271,7 @@ class TestRuleTags(BaseRuleTest):
         invalid = []
         tactics = set(tactics)
 
-        for rule in self.rules:
+        for rule in self.all_rules:
             rule_tags = rule.contents.data.tags
 
             if 'Continuous Monitoring' in rule_tags or rule.contents.data.type == 'machine_learning':
@@ -332,15 +311,11 @@ class TestRuleTags(BaseRuleTest):
 class TestRuleTimelines(BaseRuleTest):
     """Test timelines in rules are valid."""
 
-    TITLES = {
-        'db366523-f1c6-4c1f-8731-6ce5ed9e5717': 'Generic Endpoint Timeline',
-        '91832785-286d-4ebe-b884-1a208d111a70': 'Generic Network Timeline',
-        '76e52245-7519-4251-91ab-262fb1a1728c': 'Generic Process Timeline'
-    }
-
     def test_timeline_has_title(self):
         """Ensure rules with timelines have a corresponding title."""
-        for rule in self.rules:
+        from detection_rules.schemas.definitions import TIMELINE_TEMPLATES
+
+        for rule in self.all_rules:
             timeline_id = rule.contents.data.timeline_id
             timeline_title = rule.contents.data.timeline_title
 
@@ -350,27 +325,29 @@ class TestRuleTimelines(BaseRuleTest):
 
             if timeline_id:
                 unknown_id = f'{self.rule_str(rule)} Unknown timeline_id: {timeline_id}.'
-                unknown_id += f' replace with {", ".join(self.TITLES)} or update this unit test with acceptable ids'
-                self.assertIn(timeline_id, list(self.TITLES), unknown_id)
+                unknown_id += f' replace with {", ".join(TIMELINE_TEMPLATES)} ' \
+                              f'or update this unit test with acceptable ids'
+                self.assertIn(timeline_id, list(TIMELINE_TEMPLATES), unknown_id)
 
                 unknown_title = f'{self.rule_str(rule)} unknown timeline_title: {timeline_title}'
-                unknown_title += f' replace with {", ".join(self.TITLES.values())}'
+                unknown_title += f' replace with {", ".join(TIMELINE_TEMPLATES.values())}'
                 unknown_title += ' or update this unit test with acceptable titles'
-                self.assertEqual(timeline_title, self.TITLES[timeline_id], )
+                self.assertEqual(timeline_title, TIMELINE_TEMPLATES[timeline_id], unknown_title)
 
 
 class TestRuleFiles(BaseRuleTest):
     """Test the expected file names."""
 
-    def test_rule_file_names_by_tactic(self):
+    def test_rule_file_name_tactic(self):
         """Test to ensure rule files have the primary tactic prepended to the filename."""
         bad_name_rules = []
 
-        for rule in self.rules:
-            rule_path = Path(rule.path).resolve()
+        for rule in self.all_rules:
+            rule_path = rule.path.resolve()
             filename = rule_path.name
 
-            if rule_path.parent.name == 'ml':
+            # machine learning jobs should be in rules/ml or rules/integrations/<name>
+            if rule.contents.data.type == definitions.MACHINE_LEARNING:
                 continue
 
             threat = rule.contents.data.threat
@@ -392,28 +369,11 @@ class TestRuleFiles(BaseRuleTest):
 class TestRuleMetadata(BaseRuleTest):
     """Test the metadata of rules."""
 
-    def test_ecs_and_beats_opt_in_not_latest_only(self):
-        """Test that explicitly defined opt-in validation is not only the latest versions to avoid stale tests."""
-        for rule in self.rules:
-            beats_version = rule.contents.metadata.beats_version
-            ecs_versions = rule.contents.metadata.ecs_versions or []
-            latest_beats = str(beats.get_max_version())
-            latest_ecs = ecs.get_max_version()
-
-            error_msg = f'{self.rule_str(rule)} it is unnecessary to define the current latest beats version: ' \
-                        f'{latest_beats}'
-            self.assertNotEqual(latest_beats, beats_version, error_msg)
-
-            if len(ecs_versions) == 1:
-                error_msg = f'{self.rule_str(rule)} it is unnecessary to define the current latest ecs version if ' \
-                            f'only one version is specified: {latest_ecs}'
-                self.assertNotIn(latest_ecs, ecs_versions, error_msg)
-
     def test_updated_date_newer_than_creation(self):
         """Test that the updated_date is newer than the creation date."""
         invalid = []
 
-        for rule in self.rules:
+        for rule in self.all_rules:
             created = rule.contents.metadata.creation_date.split('/')
             updated = rule.contents.metadata.updated_date.split('/')
             if updated < created:
@@ -426,79 +386,279 @@ class TestRuleMetadata(BaseRuleTest):
 
     def test_deprecated_rules(self):
         """Test that deprecated rules are properly handled."""
-        versions = load_versions()
+        versions = default_version_lock.version_lock
         deprecations = load_etc_dump('deprecated_rules.json')
         deprecated_rules = {}
+        rules_path = get_path('rules')
+        deprecated_path = get_path("rules", "_deprecated")
 
-        for rule in self.rules:
+        misplaced_rules = [r for r in self.all_rules
+                           if r.path.relative_to(rules_path).parts[-2] == '_deprecated' and  # noqa: W504
+                           r.contents.metadata.maturity != 'deprecated']
+        misplaced = '\n'.join(f'{self.rule_str(r)} {r.contents.metadata.maturity}' for r in misplaced_rules)
+        err_str = f'The following rules are stored in {deprecated_path} but are not marked as deprecated:\n{misplaced}'
+        self.assertListEqual(misplaced_rules, [], err_str)
+
+        for rule in self.deprecated_rules:
             meta = rule.contents.metadata
-            maturity = meta.maturity
 
-            if maturity == 'deprecated':
-                deprecated_rules[rule.id] = rule
-                err_msg = f'{self.rule_str(rule)} cannot be deprecated if it has not been version locked. ' \
-                          f'Convert to `development` or delete the rule file instead'
-                self.assertIn(rule.id, versions, err_msg)
+            deprecated_rules[rule.id] = rule
+            err_msg = f'{self.rule_str(rule)} cannot be deprecated if it has not been version locked. ' \
+                      f'Convert to `development` or delete the rule file instead'
+            self.assertIn(rule.id, versions, err_msg)
 
-                rule_path = rule.path.relative_to(get_path('rules'))
-                err_msg = f'{self.rule_str(rule)} deprecated rules should be stored in ' \
-                          f'"{get_path("rules", "_deprecated")}" folder'
-                self.assertEqual('_deprecated', rule_path.parts[0], err_msg)
+            rule_path = rule.path.relative_to(rules_path)
+            err_msg = f'{self.rule_str(rule)} deprecated rules should be stored in ' \
+                      f'"{deprecated_path}" folder'
+            self.assertEqual('_deprecated', rule_path.parts[-2], err_msg)
 
-                err_msg = f'{self.rule_str(rule)} missing deprecation date'
-                self.assertIsNotNone(meta.deprecation_date, err_msg)
+            err_msg = f'{self.rule_str(rule)} missing deprecation date'
+            self.assertIsNotNone(meta['deprecation_date'], err_msg)
 
-                err_msg = f'{self.rule_str(rule)} deprecation_date and updated_date should match'
-                self.assertEqual(meta.deprecation_date, meta.updated_date, err_msg)
+            err_msg = f'{self.rule_str(rule)} deprecation_date and updated_date should match'
+            self.assertEqual(meta['deprecation_date'], meta['updated_date'], err_msg)
 
-        missing_rules = sorted(set(versions).difference(set(self.rule_lookup)))
-        missing_rule_strings = '\n '.join(f'{r} - {versions[r]["rule_name"]}' for r in missing_rules)
-        err_msg = f'Deprecated rules should not be removed, but moved to the rules/_deprecated folder instead. ' \
-                  f'The following rules have been version locked and are missing. ' \
-                  f'Re-add to the deprecated folder and update maturity to "deprecated": \n {missing_rule_strings}'
-        self.assertEqual([], missing_rules, err_msg)
+        # skip this so the lock file can be shared across branches
+        #
+        # missing_rules = sorted(set(versions).difference(set(self.rule_lookup)))
+        # missing_rule_strings = '\n '.join(f'{r} - {versions[r]["rule_name"]}' for r in missing_rules)
+        # err_msg = f'Deprecated rules should not be removed, but moved to the rules/_deprecated folder instead. ' \
+        #           f'The following rules have been version locked and are missing. ' \
+        #           f'Re-add to the deprecated folder and update maturity to "deprecated": \n {missing_rule_strings}'
+        # self.assertEqual([], missing_rules, err_msg)
 
         for rule_id, entry in deprecations.items():
+            # if a rule is deprecated and not backported in order to keep the rule active in older branches, then it
+            # will exist in the deprecated_rules.json file and not be in the _deprecated folder - this is expected.
+            # However, that should not occur except by exception - the proper way to handle this situation is to
+            # "fork" the existing rule by adding a new min_stack_version.
+            if PACKAGE_STACK_VERSION < Version.parse(entry['stack_version'], optional_minor_and_patch=True):
+                continue
+
             rule_str = f'{rule_id} - {entry["rule_name"]} ->'
             self.assertIn(rule_id, deprecated_rules, f'{rule_str} is logged in "deprecated_rules.json" but is missing')
 
+    @unittest.skipIf(PACKAGE_STACK_VERSION < Version.parse("8.3.0"),
+                     "Test only applicable to 8.3+ stacks regarding related integrations build time field.")
+    def test_integration_tag(self):
+        """Test integration rules defined by metadata tag."""
+        failures = []
+        non_dataset_packages = definitions.NON_DATASET_PACKAGES + ["winlog"]
 
-class TestTuleTiming(BaseRuleTest):
+        packages_manifest = load_integrations_manifests()
+        valid_integration_folders = [p.name for p in list(Path(INTEGRATION_RULE_DIR).glob("*")) if p.name != 'endpoint']
+
+        for rule in self.production_rules:
+            if isinstance(rule.contents.data, QueryRuleData) and rule.contents.data.language != 'lucene':
+                rule_integrations = rule.contents.metadata.get('integration') or []
+                rule_integrations = [rule_integrations] if isinstance(rule_integrations, str) else rule_integrations
+                data = rule.contents.data
+                meta = rule.contents.metadata
+                package_integrations = TOMLRuleContents.get_packaged_integrations(data, meta, packages_manifest)
+                package_integrations_list = list(set([integration["package"] for integration in package_integrations]))
+                indices = data.get('index')
+                for rule_integration in rule_integrations:
+
+                    # checks if the rule path matches the intended integration
+                    if rule_integration in valid_integration_folders:
+                        if rule.path.parent.name not in rule_integrations:
+                            err_msg = f'{self.rule_str(rule)} {rule_integration} tag, path is {rule.path.parent.name}'
+                            failures.append(err_msg)
+
+                    # checks if an index pattern exists if the package integration tag exists
+                    integration_string = "|".join(indices)
+                    if not re.search(rule_integration, integration_string):
+                        if rule_integration == "windows" and re.search("winlog", integration_string):
+                            continue
+                        err_msg = f'{self.rule_str(rule)} {rule_integration} tag, index pattern missing.'
+                        failures.append(err_msg)
+
+                # checks if event.dataset exists in query object and a tag exists in metadata
+                # checks if metadata tag matches from a list of integrations in EPR
+                if package_integrations and sorted(rule_integrations) != sorted(package_integrations_list):
+                    err_msg = f'{self.rule_str(rule)} integration tags: {rule_integrations} != ' \
+                              f'package integrations: {package_integrations_list}'
+                    failures.append(err_msg)
+                else:
+                    # checks if rule has index pattern integration and the integration tag exists
+                    # ignore the External Alerts rule, Threat Indicator Matching Rules, Guided onboarding
+                    ignore_ids = [
+                        "eb079c62-4481-4d6e-9643-3ca499df7aaa",
+                        "699e9fdb-b77c-4c01-995c-1c15019b9c43",
+                        "0c9a14d9-d65d-486f-9b5b-91e4e6b22bd0",
+                        "a198fbbd-9413-45ec-a269-47ae4ccf59ce"
+                    ]
+                    if any([re.search("|".join(non_dataset_packages), i, re.IGNORECASE)
+                            for i in rule.contents.data.index]):
+                        if not rule.contents.metadata.integration and rule.id not in ignore_ids:
+                            err_msg = f'substrings {non_dataset_packages} found in '\
+                                      f'{self.rule_str(rule)} rule index patterns are {rule.contents.data.index},' \
+                                      f'but no integration tag found'
+                            failures.append(err_msg)
+
+        if failures:
+            err_msg = """
+                The following rules have missing or invalid integrations tags.
+                Try updating the integrations manifest file:
+                    - `python -m detection_rules dev integrations build-manifests`\n
+                """
+            self.fail(err_msg + '\n'.join(failures))
+
+
+class TestIntegrationRules(BaseRuleTest):
+    """Test integration rules."""
+
+    @unittest.skip("8.3+ Stacks Have Related Integrations Feature")
+    def test_integration_guide(self):
+        """Test that rules which require a config note are using standard verbiage."""
+        config = '## Setup\n\n'
+        beats_integration_pattern = config + 'The {} Fleet integration, Filebeat module, or similarly ' \
+                                             'structured data is required to be compatible with this rule.'
+        render = beats_integration_pattern.format
+        integration_notes = {
+            'aws': render('AWS'),
+            'azure': render('Azure'),
+            'cyberarkpas': render('CyberArk Privileged Access Security (PAS)'),
+            'gcp': render('GCP'),
+            'google_workspace': render('Google Workspace'),
+            'o365': render('Office 365 Logs'),
+            'okta': render('Okta'),
+        }
+
+        for rule in self.all_rules:
+            integration = rule.contents.metadata.integration
+            note_str = integration_notes.get(integration)
+
+            if note_str:
+                self.assert_(rule.contents.data.note, f'{self.rule_str(rule)} note required for config information')
+
+                if note_str not in rule.contents.data.note:
+                    self.fail(f'{self.rule_str(rule)} expected {integration} config missing\n\n'
+                              f'Expected: {note_str}\n\n'
+                              f'Actual: {rule.contents.data.note}')
+
+    def test_rule_demotions(self):
+        """Test to ensure a locked rule is not dropped to development, only deprecated"""
+        versions = default_version_lock.version_lock
+        failures = []
+
+        for rule in self.all_rules:
+            if rule.id in versions and rule.contents.metadata.maturity not in ('production', 'deprecated'):
+                err_msg = f'{self.rule_str(rule)} a version locked rule can only go from production to deprecated\n'
+                err_msg += f'Actual: {rule.contents.metadata.maturity}'
+                failures.append(err_msg)
+
+        if failures:
+            err_msg = '\n'.join(failures)
+            self.fail(f'The following rules have been improperly demoted:\n{err_msg}')
+
+    def test_all_min_stack_rules_have_comment(self):
+        failures = []
+
+        for rule in self.all_rules:
+            if rule.contents.metadata.min_stack_version and not rule.contents.metadata.min_stack_comments:
+                failures.append(f'{self.rule_str(rule)} missing `metadata.min_stack_comments`. min_stack_version: '
+                                f'{rule.contents.metadata.min_stack_version}')
+
+        if failures:
+            err_msg = '\n'.join(failures)
+            self.fail(f'The following ({len(failures)}) rules have a `min_stack_version` defined but missing comments:'
+                      f'\n{err_msg}')
+
+
+class TestRuleTiming(BaseRuleTest):
     """Test rule timing and timestamps."""
 
     def test_event_override(self):
-        """Test that rules have defined an timestamp_override if needed."""
-        missing = []
+        """Test that timestamp_override is properly applied to rules."""
+        # kql: always require (fallback to @timestamp enabled)
+        # eql:
+        #   sequences: never
+        #   min_stack_version < 8.2: only where event.ingested defined (no beats) or add config to update pipeline
+        #   min_stack_version >= 8.2: any - fallback to @timestamp enabled https://github.com/elastic/kibana/pull/127989
 
-        for rule in self.rules:
-            required = False
+        errors = {
+            'query': {
+                'errors': [],
+                'msg': 'should have the `timestamp_override` set to `event.ingested`'
+            },
+            'eql_sq': {
+                'errors': [],
+                'msg': 'cannot have the `timestamp_override` set to `event.ingested` because it uses a sequence'
+            },
+            'lt_82_eql': {
+                'errors': [],
+                'msg': 'should have the `timestamp_override` set to `event.ingested`'
+            },
+            'lt_82_eql_beats': {
+                'errors': [],
+                'msg': ('eql rules include beats indexes. Non-elastic-agent indexes do not add the `event.ingested` '
+                        'field and there is no default fallback to @timestamp for EQL rules <8.2, so the override '
+                        'should be removed or a config entry included to manually add it in a custom pipeline')
+            },
+            'gte_82_eql': {
+                'errors': [],
+                'msg': ('should have the `timestamp_override` set to `event.ingested` - default fallback to '
+                        '@timestamp was added in 8.2')
+            }
+        }
 
-            if isinstance(rule.contents.data, BaseQueryRuleData) and 'endgame-*' in rule.contents.data.index:
+        pipeline_config = ('If enabling an EQL rule on a non-elastic-agent index (such as beats) for versions '
+                           '<8.2, events will not define `event.ingested` and default fallback for EQL rules '
+                           'was not added until 8.2, so you will need to add a custom pipeline to populate '
+                           '`event.ingested` to @timestamp for this rule to work.')
+
+        for rule in self.all_rules:
+            if rule.contents.data.type not in ('eql', 'query'):
+                continue
+            if isinstance(rule.contents.data, QueryRuleData) and 'endgame-*' in rule.contents.data.index:
                 continue
 
+            has_event_ingested = rule.contents.data.timestamp_override == 'event.ingested'
+            indexes = rule.contents.data.get('index', [])
+            beats_indexes = parse_beats_from_index(indexes)
+            min_stack_is_less_than_82 = Version.parse(rule.contents.metadata.min_stack_version or '7.13.0',
+                                                      optional_minor_and_patch=True) < Version.parse("8.2.0")
+            config = rule.contents.data.get('note') or ''
+            rule_str = self.rule_str(rule, trailer=None)
+
             if rule.contents.data.type == 'query':
-                required = True
-            elif rule.contents.data.type == 'eql' and \
-                    eql.utils.get_query_type(rule.contents.data.parsed_query) != 'sequence':
-                required = True
+                if not has_event_ingested:
+                    errors['query']['errors'].append(rule_str)
+            # eql rules depends
+            elif rule.contents.data.type == 'eql':
+                if rule.contents.data.is_sequence:
+                    if has_event_ingested:
+                        errors['eql_sq']['errors'].append(rule_str)
+                else:
+                    if min_stack_is_less_than_82:
+                        if not beats_indexes and not has_event_ingested:
+                            errors['lt_82_eql']['errors'].append(rule_str)
+                        elif beats_indexes and has_event_ingested and pipeline_config not in config:
+                            errors['lt_82_eql_beats']['errors'].append(rule_str)
+                    else:
+                        if not has_event_ingested:
+                            errors['gte_82_eql']['errors'].append(rule_str)
 
-            if required and rule.contents.data.timestamp_override != 'event.ingested':
-                missing.append(rule)
-
-        if missing:
-            rules_str = '\n '.join(self.rule_str(r, trailer=None) for r in missing)
-            err_msg = f'The following rules should have the `timestamp_override` set to `event.ingested`\n {rules_str}'
-            self.fail(err_msg)
+        if any([v['errors'] for k, v in errors.items()]):
+            err_strings = ['errors with `timestamp_override = "event.ingested"`']
+            for _, errors_by_type in errors.items():
+                type_errors = errors_by_type['errors']
+                if not type_errors:
+                    continue
+                err_strings.append(f'({len(type_errors)}) {errors_by_type["msg"]}')
+                err_strings.extend([f'  - {e}' for e in type_errors])
+            self.fail('\n'.join(err_strings))
 
     def test_required_lookback(self):
         """Ensure endpoint rules have the proper lookback time."""
         long_indexes = {'logs-endpoint.events.*'}
         missing = []
 
-        for rule in self.rules:
+        for rule in self.all_rules:
             contents = rule.contents
 
-            if isinstance(contents.data, BaseQueryRuleData):
+            if isinstance(contents.data, QueryRuleData):
                 if set(getattr(contents.data, "index", None) or []) & long_indexes and not contents.data.from_:
                     missing.append(rule)
 
@@ -506,3 +666,151 @@ class TestTuleTiming(BaseRuleTest):
             rules_str = '\n '.join(self.rule_str(r, trailer=None) for r in missing)
             err_msg = f'The following rules should have a longer `from` defined, due to indexes used\n {rules_str}'
             self.fail(err_msg)
+
+    def test_eql_lookback(self):
+        """Ensure EQL rules lookback => max_span, when defined."""
+        unknowns = []
+        invalids = []
+        ten_minutes = 10 * 60 * 1000
+
+        for rule in self.all_rules:
+            if rule.contents.data.type == 'eql' and rule.contents.data.max_span:
+                if rule.contents.data.look_back == 'unknown':
+                    unknowns.append(self.rule_str(rule, trailer=None))
+                else:
+                    look_back = rule.contents.data.look_back
+                    max_span = rule.contents.data.max_span
+                    expected = look_back + ten_minutes
+
+                    if expected < max_span:
+                        invalids.append(f'{self.rule_str(rule)} lookback: {look_back}, maxspan: {max_span}, '
+                                        f'expected: >={expected}')
+
+        if unknowns:
+            warn_str = '\n'.join(unknowns)
+            warnings.warn(f'Unable to determine lookbacks for the following rules:\n{warn_str}')
+
+        if invalids:
+            invalids_str = '\n'.join(invalids)
+            self.fail(f'The following rules have longer max_spans than lookbacks:\n{invalids_str}')
+
+    def test_eql_interval_to_maxspan(self):
+        """Check the ratio of interval to maxspan for eql rules."""
+        invalids = []
+        five_minutes = 5 * 60 * 1000
+
+        for rule in self.all_rules:
+            if rule.contents.data.type == 'eql':
+                interval = rule.contents.data.interval or five_minutes
+                maxspan = rule.contents.data.max_span
+                ratio = rule.contents.data.interval_ratio
+
+                # we want to test for at least a ratio of: interval >= 1/2 maxspan
+                # but we only want to make an exception and cap the ratio at 5m interval (2.5m maxspan)
+                if maxspan and maxspan > (five_minutes / 2) and ratio and ratio < .5:
+                    expected = maxspan // 2
+                    err_msg = f'{self.rule_str(rule)} interval: {interval}, maxspan: {maxspan}, expected: >={expected}'
+                    invalids.append(err_msg)
+
+        if invalids:
+            invalids_str = '\n'.join(invalids)
+            self.fail(f'The following rules have intervals too short for their given max_spans (ms):\n{invalids_str}')
+
+
+class TestLicense(BaseRuleTest):
+    """Test rule license."""
+
+    def test_elastic_license_only_v2(self):
+        """Test to ensure that production rules with the elastic license are only v2."""
+        for rule in self.production_rules:
+            rule_license = rule.contents.data.license
+            if 'elastic license' in rule_license.lower():
+                err_msg = f'{self.rule_str(rule)} If Elastic License is used, only v2 should be used'
+                self.assertEqual(rule_license, 'Elastic License v2', err_msg)
+
+
+class TestIncompatibleFields(BaseRuleTest):
+    """Test stack restricted fields do not backport beyond allowable limits."""
+
+    def test_rule_backports_for_restricted_fields(self):
+        """Test that stack restricted fields will not backport to older rule versions."""
+        invalid_rules = []
+
+        for rule in self.all_rules:
+            invalid = rule.contents.check_restricted_fields_compatibility()
+            if invalid:
+                invalid_rules.append(f'{self.rule_str(rule)} {invalid}')
+
+        if invalid_rules:
+            invalid_str = '\n'.join(invalid_rules)
+            err_msg = 'The following rules have min_stack_versions lower than allowed for restricted fields:\n'
+            err_msg += invalid_str
+            self.fail(err_msg)
+
+
+class TestBuildTimeFields(BaseRuleTest):
+    """Test validity of build-time fields."""
+
+    def test_build_fields_min_stack(self):
+        """Test that newly introduced build-time fields for a min_stack for applicable rules."""
+        current_stack_ver = PACKAGE_STACK_VERSION
+        invalids = []
+
+        for rule in self.production_rules:
+            min_stack = rule.contents.metadata.min_stack_version
+            build_fields = rule.contents.data.get_build_fields()
+
+            errors = []
+            for build_field, field_versions in build_fields.items():
+                start_ver, end_ver = field_versions
+                if start_ver is not None and current_stack_ver >= start_ver:
+                    if min_stack is None or not Version.parse(min_stack) >= start_ver:
+                        errors.append(f'{build_field} >= {start_ver}')
+
+            if errors:
+                err_str = ', '.join(errors)
+                invalids.append(f'{self.rule_str(rule)} uses a rule type with build fields requiring min_stack_versions'
+                                f' to be set: {err_str}')
+
+            if invalids:
+                self.fail(invalids)
+
+
+class TestRiskScoreMismatch(BaseRuleTest):
+    """Test that severity and risk_score fields contain corresponding values"""
+
+    def test_rule_risk_score_severity_mismatch(self):
+        invalid_list = []
+        risk_severity = {
+            "critical": 99,
+            "high": 73,
+            "medium": 47,
+            "low": 21,
+        }
+        for rule in self.all_rules:
+            severity = rule.contents.data.severity
+            risk_score = rule.contents.data.risk_score
+            if risk_severity[severity] != risk_score:
+                invalid_list.append(f'{self.rule_str(rule)} Severity: {severity}, Risk Score: {risk_score}')
+
+        if invalid_list:
+            invalid_str = '\n'.join(invalid_list)
+            err_msg = 'The following rules have mismatches between Severity and Risk Score field values:\n'
+            err_msg += invalid_str
+            self.fail(err_msg)
+
+
+class TestOsqueryPluginNote(BaseRuleTest):
+    """Test if a guide containing Osquery Plugin syntax contains the version note."""
+
+    def test_note_guide(self):
+        osquery_note = '> **Note**:\n'
+        osquery_note_pattern = osquery_note + '> This investigation guide uses the [Osquery Markdown Plugin]' \
+            '(https://www.elastic.co/guide/en/security/master/invest-guide-run-osquery.html) introduced in Elastic ' \
+            'Stack version 8.5.0. Older Elastic Stack versions will display unrendered Markdown in this guide.'
+
+        for rule in self.all_rules:
+            if rule.contents.data.note and "!{osquery" in rule.contents.data.note:
+                if osquery_note_pattern not in rule.contents.data.note:
+                    self.fail(f'{self.rule_str(rule)} Investigation guides using the Osquery Markdown must contain '
+                              f'the following note:\n{osquery_note_pattern}')

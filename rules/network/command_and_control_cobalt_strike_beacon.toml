@@ -1,7 +1,10 @@
 [metadata]
 creation_date = "2020/07/06"
+integration = ["endpoint"]
 maturity = "production"
-updated_date = "2021/03/03"
+min_stack_comments = "New fields added: required_fields, related_integrations, setup"
+min_stack_version = "8.3.0"
+updated_date = "2022/12/14"
 
 [rule]
 author = ["Elastic"]
@@ -16,19 +19,23 @@ false_positives = [
     expected.
     """,
 ]
-index = ["packetbeat-*"]
+from = "now-9m"
+index = ["auditbeat-*", "filebeat-*", "packetbeat-*", "logs-endpoint.events.*"]
 language = "lucene"
 license = "Elastic License v2"
 name = "Cobalt Strike Command and Control Beacon"
-note = "This activity has been observed in FIN7 campaigns."
+note = """## Threat intel
+
+This activity has been observed in FIN7 campaigns."""
 references = [
     "https://blog.morphisec.com/fin7-attacks-restaurant-industry",
     "https://www.fireeye.com/blog/threat-research/2017/04/fin7-phishing-lnk.html",
+    "https://www.elastic.co/security-labs/collecting-cobalt-strike-beacons-with-the-elastic-stack",
 ]
 risk_score = 73
 rule_id = "cf53f532-9cc9-445a-9ae7-fced307ec53c"
 severity = "high"
-tags = ["Elastic", "Network", "Threat Detection", "Command and Control"]
+tags = ["Elastic", "Network", "Threat Detection", "Command and Control", "Host"]
 timestamp_override = "event.ingested"
 type = "query"
 

@@ -13,9 +13,9 @@ all: release
 
 
 $(VENV):
-	pip install virtualenv
+	pip3 install virtualenv
 	virtualenv $(VENV) --python=python3.8
-	$(PIP) install -r requirements.txt
+	$(PIP) install .[dev]
 	$(PIP) install setuptools -U
 
 
@@ -25,7 +25,7 @@ clean:
 
 .PHONY: deps
 deps: $(VENV)
-	$(PIP) install -r requirements.txt
+	$(PIP) install .[dev]
 
 
 .PHONY: pytest
@@ -48,7 +48,7 @@ test: $(VENV) lint pytest
 .PHONY: release
 release: deps
 	@echo "RELEASE: $(app_name)"
-	$(PYTHON) -m detection_rules dev build-release
+	$(PYTHON) -m detection_rules dev build-release --generate-navigator
 	rm -rf dist
 	mkdir dist
 	cp -r releases/*/*.zip dist/

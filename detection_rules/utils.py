@@ -6,6 +6,7 @@
 """Util functions."""
 import base64
 import contextlib
+import distutils.spawn
 import functools
 import glob
 import gzip
@@ -13,12 +14,17 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import subprocess
 import time
 import zipfile
 from dataclasses import is_dataclass, astuple
 from datetime import datetime, date
 from pathlib import Path
+from typing import Dict, Union, Optional, Callable
 
+import click
+import pytoml
 import eql.utils
 from eql.utils import load_dump, stream_json_lines
 
@@ -26,7 +32,8 @@ import kql
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(CURR_DIR)
-ETC_DIR = os.path.join(ROOT_DIR, "etc")
+ETC_DIR = os.path.join(ROOT_DIR, "detection_rules", "etc")
+INTEGRATION_RULE_DIR = os.path.join(ROOT_DIR, "rules", "integrations")
 
 
 class NonelessDict(dict):
@@ -44,6 +51,20 @@ class DateTimeEncoder(json.JSONEncoder):
 
 
 marshmallow_schemas = {}
+
+
+def gopath() -> Optional[str]:
+    """Retrieve $GOPATH."""
+    env_path = os.getenv("GOPATH")
+    if env_path:
+        return env_path
+
+    go_bin = distutils.spawn.find_executable("go")
+    if go_bin:
+        output = subprocess.check_output([go_bin, "env"], encoding="utf-8").splitlines()
+        for line in output:
+            if line.startswith("GOPATH="):
+                return line[len("GOPATH="):].strip('"')
 
 
 def dict_hash(obj: dict) -> str:
@@ -70,29 +91,29 @@ def get_path(*paths) -> str:
 
 
 def get_etc_path(*paths):
-    """Load a file from the etc/ folder."""
+    """Load a file from the detection_rules/etc/ folder."""
     return os.path.join(ETC_DIR, *paths)
 
 
 def get_etc_glob_path(*patterns):
-    """Load a file from the etc/ folder."""
+    """Load a file from the detection_rules/etc/ folder."""
     pattern = os.path.join(*patterns)
     return glob.glob(os.path.join(ETC_DIR, pattern))
 
 
 def get_etc_file(name, mode="r"):
-    """Load a file from the etc/ folder."""
+    """Load a file from the detection_rules/etc/ folder."""
     with open(get_etc_path(name), mode) as f:
         return f.read()
 
 
 def load_etc_dump(*path):
-    """Load a json/yml/toml file from the etc/ folder."""
+    """Load a json/yml/toml file from the detection_rules/etc/ folder."""
     return eql.utils.load_dump(get_etc_path(*path))
 
 
 def save_etc_dump(contents, *path, **kwargs):
-    """Load a json/yml/toml file from the etc/ folder."""
+    """Save a json/yml/toml file from the detection_rules/etc/ folder."""
     path = get_etc_path(*path)
     _, ext = os.path.splitext(path)
     sort_keys = kwargs.pop('sort_keys', True)
@@ -105,7 +126,7 @@ def save_etc_dump(contents, *path, **kwargs):
         return eql.utils.save_dump(contents, path)
 
 
-def gzip_compress(contents):
+def gzip_compress(contents) -> bytes:
     gz_file = io.BytesIO()
 
     with gzip.GzipFile(mode="w", fileobj=gz_file) as f:
@@ -146,6 +167,24 @@ def unzip_and_save(contents, path, member=None, verbose=True):
         if verbose:
             name_list = archive.namelist()[member] if not member else archive.namelist()
             print('Saved files to {}: \n\t- {}'.format(path, '\n\t- '.join(name_list)))
+
+
+def unzip_to_dict(zipped: zipfile.ZipFile, load_json=True) -> Dict[str, Union[dict, str]]:
+    """Unzip and load contents to dict with filenames as keys."""
+    bundle = {}
+    for filename in zipped.namelist():
+        if filename.endswith('/'):
+            continue
+
+        fp = Path(filename)
+        contents = zipped.read(filename)
+
+        if load_json and fp.suffix == '.json':
+            contents = json.loads(contents)
+
+        bundle[fp.name] = contents
+
+    return bundle
 
 
 def event_sort(events, timestamp='@timestamp', date_format='%Y-%m-%dT%H:%M:%S.%f%z', asc=True):
@@ -234,30 +273,33 @@ def clear_caches():
     _cache.clear()
 
 
-def load_rule_contents(rule_file: str, single_only=False) -> list:
+def load_rule_contents(rule_file: Path, single_only=False) -> list:
     """Load a rule file from multiple formats."""
     _, extension = os.path.splitext(rule_file)
+    raw_text = rule_file.read_text()
 
     if extension in ('.ndjson', '.jsonl'):
         # kibana exported rule object is ndjson with the export metadata on the last line
-        with open(rule_file, 'r') as f:
-            contents = [json.loads(line) for line in f.readlines()]
+        contents = [json.loads(line) for line in raw_text.splitlines()]
 
-            if len(contents) > 1 and 'exported_count' in contents[-1]:
-                contents.pop(-1)
+        if len(contents) > 1 and 'exported_count' in contents[-1]:
+            contents.pop(-1)
 
-            if single_only and len(contents) > 1:
-                raise ValueError('Multiple rules not allowed')
+        if single_only and len(contents) > 1:
+            raise ValueError('Multiple rules not allowed')
 
-            return contents or [{}]
+        return contents or [{}]
+    elif extension == '.toml':
+        rule = pytoml.loads(raw_text)
     else:
         rule = load_dump(rule_file)
-        if isinstance(rule, dict):
-            return [rule]
-        elif isinstance(rule, list):
-            return rule
-        else:
-            raise ValueError(f"Expected a list or dictionary in {rule_file}")
+
+    if isinstance(rule, dict):
+        return [rule]
+    elif isinstance(rule, list):
+        return rule
+    else:
+        raise ValueError(f"Expected a list or dictionary in {rule_file}")
 
 
 def format_command_options(ctx):
@@ -278,6 +320,38 @@ def format_command_options(ctx):
             formatter.write_dl(opts)
 
     return formatter.getvalue()
+
+
+def make_git(*prefix_args) -> Optional[Callable]:
+    git_exe = shutil.which("git")
+    prefix_args = [str(arg) for arg in prefix_args]
+
+    if not git_exe:
+        click.secho("Unable to find git", err=True, fg="red")
+        ctx = click.get_current_context(silent=True)
+
+        if ctx is not None:
+            ctx.exit(1)
+
+        return
+
+    def git(*args, print_output=False):
+        nonlocal prefix_args
+
+        if '-C' not in prefix_args:
+            prefix_args = ['-C', get_path()] + prefix_args
+
+        full_args = [git_exe] + prefix_args + [str(arg) for arg in args]
+        if print_output:
+            return subprocess.check_call(full_args)
+        return subprocess.check_output(full_args, encoding="utf-8").rstrip()
+
+    return git
+
+
+def git(*args, **kwargs):
+    """Find and run a one-off Git command."""
+    return make_git()(*args, **kwargs)
 
 
 def add_params(*params):
