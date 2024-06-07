@@ -73,10 +73,10 @@ class RtaEvents:
         return events
 
     @staticmethod
-    def _get_dump_dir(rta_name=None, host_id=None):
+    def _get_dump_dir(rta_name=None, host_id=None, host_os_family=None):
         """Prepare and get the dump path."""
-        if rta_name:
-            dump_dir = get_path('unit_tests', 'data', 'true_positives', rta_name)
+        if rta_name and host_os_family:
+            dump_dir = get_path('unit_tests', 'data', 'true_positives', rta_name, host_os_family)
             os.makedirs(dump_dir, exist_ok=True)
             return dump_dir
         else:
@@ -113,10 +113,20 @@ class RtaEvents:
         """Save collected events."""
         assert self.events, 'Nothing to save. Run Collector.run() method first or verify logging'
 
-        dump_dir = dump_dir or self._get_dump_dir(rta_name=rta_name, host_id=host_id)
+        host_os_family = None
+        for key in self.events.keys():
+            if self.events.get(key, {})[0].get('host', {}).get('id') == host_id:
+                host_os_family = self.events.get(key, {})[0].get('host', {}).get('os').get('family')
+                break
+        if not host_os_family:
+            click.echo('Unable to determine host.os.family for host_id: {}'.format(host_id))
+            host_os_family = click.prompt("Please enter the host.os.family for this host_id",
+                                          type=click.Choice(["windows", "macos", "linux"]), default="windows")
+
+        dump_dir = dump_dir or self._get_dump_dir(rta_name=rta_name, host_id=host_id, host_os_family=host_os_family)
 
         for source, events in self.events.items():
-            path = os.path.join(dump_dir, source + '.jsonl')
+            path = os.path.join(dump_dir, source + '.ndjson')
             with open(path, 'w') as f:
                 f.writelines([json.dumps(e, sort_keys=True) + '\n' for e in events])
                 click.echo('{} events saved to: {}'.format(len(events), path))
@@ -326,7 +336,7 @@ class CollectRtaEvents(CollectEvents):
     def run(self, dsl, indexes, start_time):
         """Collect the events."""
         results = self.search(dsl, language='dsl', index=indexes, start_time=start_time, end_time='now', size=5000,
-                              sort='@timestamp:asc')
+                              sort=[{'@timestamp': {'order': 'asc'}}])
         events = self._group_events_by_type(results)
         return RtaEvents(events)
 
@@ -361,7 +371,7 @@ def es_group(ctx: click.Context, **kwargs):
 @click.option('--query', '-q', help='KQL query to scope search')
 @click.option('--index', '-i', multiple=True, help='Index(es) to search against (default: all indexes)')
 @click.option('--rta-name', '-r', help='Name of RTA in order to save events directly to unit tests data directory')
-@click.option('--rule-id', help='Updates rule mapping in rule-mapping.yml file (requires --rta-name)')
+@click.option('--rule-id', help='Updates rule mapping in rule-mapping.yaml file (requires --rta-name)')
 @click.option('--view-events', is_flag=True, help='Print events after saving')
 @click.pass_context
 def collect_events(ctx, host_id, query, index, rta_name, rule_id, view_events):

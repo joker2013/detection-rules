@@ -2,9 +2,7 @@
 creation_date = "2021/01/19"
 integration = ["endpoint"]
 maturity = "production"
-min_stack_comments = "New fields added: required_fields, related_integrations, setup"
-min_stack_version = "8.3.0"
-updated_date = "2022/12/14"
+updated_date = "2024/05/21"
 
 [rule]
 author = ["Elastic"]
@@ -24,26 +22,23 @@ references = ["https://www.anomali.com/blog/pulling-linux-rabbit-rabbot-malware-
 risk_score = 47
 rule_id = "e6c1a552-7776-44ad-ae0f-8746cc07773c"
 severity = "medium"
-tags = ["Elastic", "Host", "macOS", "Linux", "Threat Detection", "Persistence"]
+tags = [
+    "Domain: Endpoint",
+    "OS: macOS",
+    "OS: Linux",
+    "Use Case: Threat Detection",
+    "Tactic: Persistence",
+    "Data Source: Elastic Defend",
+]
 timestamp_override = "event.ingested"
 type = "query"
 
 query = '''
 event.category:file and event.type:change and
-  process.name:(* and not (sudo or
-                           vim or
-                           zsh or
-                           env or
-                           nano or
-                           bash or
-                           Terminal or
-                           xpcproxy or
-                           login or
-                           cat or
-                           cp or
-                           launchctl or
-                           java)) and
-  not process.executable:(/Applications/* or /private/var/folders/* or /usr/local/*) and
+  process.name:(* and not (sudo or vim or zsh or env or nano or bash or Terminal or xpcproxy or login or cat or cp or
+  launchctl or java or dnf or tailwatchd or ldconfig or yum or semodule or cpanellogd or dockerd or authselect or chmod or
+  dnf-automatic or git or dpkg or platform-python)) and
+  not process.executable:(/Applications/* or /private/var/folders/* or /usr/local/* or /opt/saltstack/salt/bin/*) and
   file.path:(/private/etc/rc.local or
              /etc/rc.local or
              /home/*/.profile or

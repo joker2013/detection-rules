@@ -2,9 +2,7 @@
 creation_date = "2021/06/01"
 integration = ["endpoint", "windows"]
 maturity = "production"
-min_stack_comments = "New fields added: required_fields, related_integrations, setup"
-min_stack_version = "8.3.0"
-updated_date = "2022/12/14"
+updated_date = "2024/05/21"
 
 [rule]
 author = ["Elastic"]
@@ -13,7 +11,7 @@ Identifies modifications of the AmsiEnable registry key to 0, which disables the
 adversary can modify this key to disable AMSI protections.
 """
 from = "now-9m"
-index = ["winlogbeat-*", "logs-endpoint.events.*", "logs-windows.*", "endgame-*"]
+index = ["winlogbeat-*", "logs-endpoint.events.registry-*", "logs-windows.sysmon_operational-*", "endgame-*"]
 language = "eql"
 license = "Elastic License v2"
 name = "Modification of AmsiEnable Registry Key"
@@ -66,10 +64,6 @@ This rule monitors the modifications to the Software\\Microsoft\\Windows Script\
 - Delete or set the key to its default value.
 - Determine the initial vector abused by the attacker and take action to prevent reinfection through the same vector.
 - Using the incident response data, update logging and audit policies to improve the mean time to detect (MTTD) and the mean time to respond (MTTR).
-
-## Setup
-
-If enabling an EQL rule on a non-elastic-agent index (such as beats) for versions <8.2, events will not define `event.ingested` and default fallback for EQL rules was not added until 8.2, so you will need to add a custom pipeline to populate `event.ingested` to @timestamp for this rule to work.
 """
 references = [
     "https://hackinparis.com/data/slides/2019/talks/HIP2019-Dominic_Chell-Cracking_The_Perimeter_With_Sharpshooter.pdf",
@@ -77,21 +71,30 @@ references = [
 ]
 risk_score = 73
 rule_id = "f874315d-5188-4b4a-8521-d1c73093a7e4"
+setup = """## Setup
+
+If enabling an EQL rule on a non-elastic-agent index (such as beats) for versions <8.2,
+events will not define `event.ingested` and default fallback for EQL rules was not added until version 8.2.
+Hence for this rule to work effectively, users will need to add a custom ingest pipeline to populate
+`event.ingested` to @timestamp.
+For more details on adding a custom ingest pipeline refer - https://www.elastic.co/guide/en/fleet/current/data-streams-pipeline-tutorial.html
+"""
 severity = "high"
 tags = [
-    "Elastic",
-    "Host",
-    "Windows",
-    "Threat Detection",
-    "Defense Evasion",
-    "Investigation Guide",
-    "Elastic Endgame",
+    "Domain: Endpoint",
+    "OS: Windows",
+    "Use Case: Threat Detection",
+    "Tactic: Defense Evasion",
+    "Resources: Investigation Guide",
+    "Data Source: Elastic Endgame",
+    "Data Source: Elastic Defend",
+    "Data Source: Sysmon",
 ]
 timestamp_override = "event.ingested"
 type = "eql"
 
 query = '''
-registry where event.type in ("creation", "change") and
+registry where host.os.type == "windows" and event.type in ("creation", "change") and
   registry.path : (
     "HKEY_USERS\\*\\Software\\Microsoft\\Windows Script\\Settings\\AmsiEnable",
     "HKU\\*\\Software\\Microsoft\\Windows Script\\Settings\\AmsiEnable",
@@ -103,6 +106,11 @@ registry where event.type in ("creation", "change") and
 
 [[rule.threat]]
 framework = "MITRE ATT&CK"
+[[rule.threat.technique]]
+id = "T1112"
+name = "Modify Registry"
+reference = "https://attack.mitre.org/techniques/T1112/"
+
 [[rule.threat.technique]]
 id = "T1562"
 name = "Impair Defenses"
